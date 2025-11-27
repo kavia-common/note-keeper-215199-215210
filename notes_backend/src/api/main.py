@@ -1,12 +1,13 @@
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Path, Body, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
+from pymongo.errors import ServerSelectionTimeoutError, PyMongoError
 
 from src.api.db import (
     connect_to_mongo,
@@ -38,7 +39,7 @@ app = FastAPI(
 # Configure CORS using env FRONTEND_ORIGINS/FRONTEND_ORIGIN.
 # - FRONTEND_ORIGINS: optional comma-separated list of allowed origins
 # - FRONTEND_ORIGIN: single origin (legacy). If both set, both are used.
-# Defaults include localhost:3000 (http) and inferred preview https origin for convenience.
+# Defaults include localhost:3000 (http) and explicit preview https origin.
 frontend_origin_single = os.getenv("FRONTEND_ORIGIN")
 frontend_origins_csv = os.getenv("FRONTEND_ORIGINS")
 
@@ -54,12 +55,8 @@ if frontend_origins_csv:
 
 # If nothing provided, include sensible defaults for local dev and preview environment
 if not allow_origins:
-    # Local development default
     allow_origins.append("http://localhost:3000")
-    # Attempt to infer preview frontend origin based on host
-    # If backend runs on https://<host>:3001, frontend likely at https://<host>:3000
-    host = os.getenv("HOSTNAME") or ""
-    # The platform URL is not always available; we safely add a generic pattern used by the environment
+    # Explicitly include the preview origin to avoid CORS mismatch
     allow_origins.append("https://vscode-internal-42596-beta.beta01.cloud.kavia.ai:3000")
 
 app.add_middleware(
@@ -74,16 +71,20 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup() -> None:
     """Initialize shared resources such as the database connection and ensure indexes on notes collection."""
+    # Attempt a non-fatal connect (lazy), then try creating indexes if DB reachable
     await connect_to_mongo()
-    # Ensure indexes
-    db: AsyncIOMotorDatabase
-    async for db in get_db():  # use dependency generator to get db instance
-        notes: AsyncIOMotorCollection = db.get_collection("notes")
-        # Index on updatedAt descending for efficient listing
-        await notes.create_index([("updatedAt", -1)], name="idx_updatedAt_desc")
-        # Optional index on title for potential searches
-        await notes.create_index([("title", 1)], name="idx_title_asc")
-        break
+    try:
+        db: AsyncIOMotorDatabase
+        async for db in get_db():  # use dependency generator to get db instance
+            notes: AsyncIOMotorCollection = db.get_collection("notes")
+            # Index on updatedAt descending for efficient listing
+            await notes.create_index([("updatedAt", -1)], name="idx_updatedAt_desc")
+            # Optional index on title for potential searches
+            await notes.create_index([("title", 1)], name="idx_title_asc")
+            break
+    except Exception:
+        # DB may not be up; skip index creation at startup and let requests handle availability
+        pass
 
 
 @app.on_event("shutdown")
@@ -98,6 +99,17 @@ def health_check():
     return {"message": "Healthy"}
 
 
+def _db_unavailable_error(exc: Optional[Exception] = None) -> HTTPException:
+    """
+    Create a standardized 503 error explaining DB is unavailable with actionable hint.
+    """
+    hint = "Database unavailable. Ensure MongoDB is running and MONGODB_URL/MONGODB_DB are set."
+    detail = hint
+    if exc is not None:
+        detail = f"{hint} ({type(exc).__name__}: {exc})"
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+
 # PUBLIC_INTERFACE
 @app.get(
     "/notes",
@@ -107,15 +119,19 @@ def health_check():
     description="Retrieve all notes ordered by updatedAt in descending order.",
     responses={
         200: {"description": "List of notes."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def list_notes(collection: AsyncIOMotorCollection = Depends(get_notes_collection)) -> List[NoteOut]:
     """List notes ordered by updatedAt descending."""
-    cursor = collection.find({}, sort=[("updatedAt", -1)])
-    notes: List[NoteOut] = []
-    async for doc in cursor:
-        notes.append(mongo_doc_to_note_out(doc))
-    return notes
+    try:
+        cursor = collection.find({}, sort=[("updatedAt", -1)])
+        notes: List[NoteOut] = []
+        async for doc in cursor:
+            notes.append(mongo_doc_to_note_out(doc))
+        return notes
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)
 
 
 # PUBLIC_INTERFACE
@@ -129,6 +145,7 @@ async def list_notes(collection: AsyncIOMotorCollection = Depends(get_notes_coll
     responses={
         201: {"description": "Note created successfully."},
         422: {"description": "Validation error."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def create_note(
@@ -136,13 +153,16 @@ async def create_note(
     collection: AsyncIOMotorCollection = Depends(get_notes_collection),
 ) -> NoteOut:
     """Create a note with server-generated timestamps."""
-    doc = note_in_to_mongo_doc(payload)
-    result = await collection.insert_one(doc)
-    created = await collection.find_one({"_id": result.inserted_id})
-    if created is None:
-        # Unexpected, but handle gracefully
-        raise HTTPException(status_code=500, detail="Failed to retrieve created note")
-    return mongo_doc_to_note_out(created)
+    try:
+        doc = note_in_to_mongo_doc(payload)
+        result = await collection.insert_one(doc)
+        created = await collection.find_one({"_id": result.inserted_id})
+        if created is None:
+            # Unexpected, but handle gracefully
+            raise HTTPException(status_code=500, detail="Failed to retrieve created note")
+        return mongo_doc_to_note_out(created)
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)
 
 
 def _parse_object_id(id_str: str) -> ObjectId:
@@ -163,6 +183,7 @@ def _parse_object_id(id_str: str) -> ObjectId:
         200: {"description": "Note found."},
         400: {"description": "Invalid id."},
         404: {"description": "Note not found."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def get_note(
@@ -170,11 +191,14 @@ async def get_note(
     collection: AsyncIOMotorCollection = Depends(get_notes_collection),
 ) -> NoteOut:
     """Get a single note by id."""
-    oid = _parse_object_id(id)
-    doc = await collection.find_one({"_id": oid})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return mongo_doc_to_note_out(doc)
+    try:
+        oid = _parse_object_id(id)
+        doc = await collection.find_one({"_id": oid})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Note not found")
+        return mongo_doc_to_note_out(doc)
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)
 
 
 # PUBLIC_INTERFACE
@@ -188,6 +212,7 @@ async def get_note(
         200: {"description": "Note updated."},
         400: {"description": "Invalid id."},
         404: {"description": "Note not found."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def update_note_partial(
@@ -196,17 +221,20 @@ async def update_note_partial(
     collection: AsyncIOMotorCollection = Depends(get_notes_collection),
 ) -> NoteOut:
     """Partially update a note and set updatedAt to now."""
-    oid = _parse_object_id(id)
-    existing = await collection.find_one({"_id": oid})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Note not found")
-    new_doc = apply_note_update(existing, payload)
-    # Do not allow changing _id or createdAt
-    update_fields = {k: v for k, v in new_doc.items() if k not in ["_id", "createdAt"]}
-    await collection.update_one({"_id": oid}, {"$set": update_fields})
-    updated = await collection.find_one({"_id": oid})
-    assert updated is not None
-    return mongo_doc_to_note_out(updated)
+    try:
+        oid = _parse_object_id(id)
+        existing = await collection.find_one({"_id": oid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Note not found")
+        new_doc = apply_note_update(existing, payload)
+        # Do not allow changing _id or createdAt
+        update_fields = {k: v for k, v in new_doc.items() if k not in ["_id", "createdAt"]}
+        await collection.update_one({"_id": oid}, {"$set": update_fields})
+        updated = await collection.find_one({"_id": oid})
+        assert updated is not None
+        return mongo_doc_to_note_out(updated)
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)
 
 
 # PUBLIC_INTERFACE
@@ -220,6 +248,7 @@ async def update_note_partial(
         200: {"description": "Note updated."},
         400: {"description": "Invalid id."},
         404: {"description": "Note not found."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def update_note_replace(
@@ -228,21 +257,24 @@ async def update_note_replace(
     collection: AsyncIOMotorCollection = Depends(get_notes_collection),
 ) -> NoteOut:
     """Replace a note's title and content and set updatedAt to now."""
-    oid = _parse_object_id(id)
-    existing = await collection.find_one({"_id": oid})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Note not found")
-    # Keep createdAt, update content/title and updatedAt
-    replacement = {
-        "title": payload.title,
-        "content": payload.content,
-        "createdAt": existing.get("createdAt", datetime.utcnow()),
-        "updatedAt": datetime.utcnow(),
-    }
-    await collection.update_one({"_id": oid}, {"$set": replacement})
-    updated = await collection.find_one({"_id": oid})
-    assert updated is not None
-    return mongo_doc_to_note_out(updated)
+    try:
+        oid = _parse_object_id(id)
+        existing = await collection.find_one({"_id": oid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Note not found")
+        # Keep createdAt, update content/title and updatedAt
+        replacement = {
+            "title": payload.title,
+            "content": payload.content,
+            "createdAt": existing.get("createdAt", datetime.utcnow()),
+            "updatedAt": datetime.utcnow(),
+        }
+        await collection.update_one({"_id": oid}, {"$set": replacement})
+        updated = await collection.find_one({"_id": oid})
+        assert updated is not None
+        return mongo_doc_to_note_out(updated)
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)
 
 
 # PUBLIC_INTERFACE
@@ -256,6 +288,7 @@ async def update_note_replace(
         204: {"description": "Note deleted."},
         400: {"description": "Invalid id."},
         404: {"description": "Note not found."},
+        503: {"description": "Database unavailable."},
     },
 )
 async def delete_note(
@@ -263,8 +296,11 @@ async def delete_note(
     collection: AsyncIOMotorCollection = Depends(get_notes_collection),
 ) -> JSONResponse:
     """Delete a note by id."""
-    oid = _parse_object_id(id)
-    result = await collection.delete_one({"_id": oid})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    try:
+        oid = _parse_object_id(id)
+        result = await collection.delete_one({"_id": oid})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Note not found")
+        return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    except (ServerSelectionTimeoutError, PyMongoError) as exc:
+        raise _db_unavailable_error(exc)

@@ -16,6 +16,7 @@ _DEFAULT_MONGODB_DB = "notes_app"
 
 _client: Optional[AsyncIOMotorClient] = None
 _db: Optional[AsyncIOMotorDatabase] = None
+_last_connection_error: Optional[str] = None  # track last error for diagnostics
 
 
 class DBSettings(BaseModel):
@@ -30,12 +31,22 @@ def _ensure_client() -> AsyncIOMotorClient:
     Ensure a singleton Motor client is initialized.
     Not exposed as public API; used internally by helpers.
     """
-    global _client, _db
+    global _client, _db, _last_connection_error
     if _client is None:
         settings = DBSettings()
-        _client = AsyncIOMotorClient(settings.mongodb_url)
-        _db = _client[settings.mongodb_db]
-    return _client
+        # Allow overriding for preview environments if localhost port is remapped
+        mongodb_url = settings.mongodb_url
+        # Example: if explicitly set to notes_database service through env, we respect it
+        try:
+            _client = AsyncIOMotorClient(mongodb_url, serverSelectionTimeoutMS=1500)
+            _db = _client[settings.mongodb_db]
+            _last_connection_error = None
+        except Exception as exc:
+            # Do not raise here; keep lazy and record error for later
+            _client = None
+            _db = None
+            _last_connection_error = f"{type(exc).__name__}: {exc}"
+    return _client  # may be None if failed
 
 
 def _ensure_db() -> AsyncIOMotorDatabase:
@@ -70,6 +81,7 @@ async def connect_to_mongo() -> None:
 
     This should be called during application startup.
     """
+    # Try to initialize but do not crash if server not reachable; lazy connection will be attempted during requests.
     _ensure_client()
 
 
