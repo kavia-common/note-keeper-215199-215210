@@ -1,0 +1,456 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Notes Backend API",
+    "description": "REST API for the Notes application, providing CRUD operations for notes.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health Check",
+        "description": "Return a simple health status to indicate the service is running.",
+        "operationId": "health_check__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notes": {
+      "get": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "List notes",
+        "description": "Retrieve all notes ordered by updatedAt in descending order.",
+        "operationId": "list_notes_notes_get",
+        "responses": {
+          "200": {
+            "description": "List of notes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NoteOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Notes Notes Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Create a note",
+        "description": "Create a new note. Server will set createdAt and updatedAt timestamps.",
+        "operationId": "create_note_notes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn",
+                "description": "Note data."
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Note created successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error."
+          }
+        }
+      }
+    },
+    "/notes/{id}": {
+      "get": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Get a note",
+        "description": "Retrieve a single note by its id.",
+        "operationId": "get_note_notes__id__get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Note id (ObjectId string)",
+              "title": "Id"
+            },
+            "description": "Note id (ObjectId string)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Note found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid id."
+          },
+          "404": {
+            "description": "Note not found."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Update a note (partial)",
+        "description": "Partially update fields of a note. The server sets updatedAt to now.",
+        "operationId": "update_note_partial_notes__id__patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Note id (ObjectId string)",
+              "title": "Id"
+            },
+            "description": "Note id (ObjectId string)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteUpdate",
+                "description": "Fields to update."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Note updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid id."
+          },
+          "404": {
+            "description": "Note not found."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Update a note (replace)",
+        "description": "Replace mutable fields of a note. The server sets updatedAt to now.",
+        "operationId": "update_note_replace_notes__id__put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Note id (ObjectId string)",
+              "title": "Id"
+            },
+            "description": "Note id (ObjectId string)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn",
+                "description": "Full note payload to replace current values."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Note updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid id."
+          },
+          "404": {
+            "description": "Note not found."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "notes"
+        ],
+        "summary": "Delete a note",
+        "description": "Delete a note by its id.",
+        "operationId": "delete_note_notes__id__delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Note id (ObjectId string)",
+              "title": "Id"
+            },
+            "description": "Note id (ObjectId string)"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Note deleted."
+          },
+          "400": {
+            "description": "Invalid id."
+          },
+          "404": {
+            "description": "Note not found."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "NoteIn": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Title of the note"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Content/body of the note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "NoteIn",
+        "description": "Payload model used when creating a note."
+      },
+      "NoteOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Unique identifier of the note (stringified ObjectId)"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Title of the note"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Content/body of the note"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "Timestamp when the note was created"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat",
+            "description": "Timestamp of the last update to the note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "content",
+          "createdAt",
+          "updatedAt"
+        ],
+        "title": "NoteOut",
+        "description": "Response model representing a note as returned by the API."
+      },
+      "NoteUpdate": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "Updated title of the note"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content",
+            "description": "Updated content/body of the note"
+          }
+        },
+        "type": "object",
+        "title": "NoteUpdate",
+        "description": "Payload model used when updating a note; all fields optional."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "Service health and readiness endpoints."
+    },
+    {
+      "name": "notes",
+      "description": "Operations related to notes resources."
+    }
+  ]
+}
