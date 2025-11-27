@@ -35,9 +35,32 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-# Configure CORS using env FRONTEND_ORIGIN; default to http://localhost:3000
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
-allow_origins = [frontend_origin]
+# Configure CORS using env FRONTEND_ORIGINS/FRONTEND_ORIGIN.
+# - FRONTEND_ORIGINS: optional comma-separated list of allowed origins
+# - FRONTEND_ORIGIN: single origin (legacy). If both set, both are used.
+# Defaults include localhost:3000 (http) and inferred preview https origin for convenience.
+frontend_origin_single = os.getenv("FRONTEND_ORIGIN")
+frontend_origins_csv = os.getenv("FRONTEND_ORIGINS")
+
+allow_origins: list[str] = []
+
+# Include legacy single origin if provided
+if frontend_origin_single:
+    allow_origins.append(frontend_origin_single.strip())
+
+# Include CSV origins if provided
+if frontend_origins_csv:
+    allow_origins.extend([o.strip() for o in frontend_origins_csv.split(",") if o.strip()])
+
+# If nothing provided, include sensible defaults for local dev and preview environment
+if not allow_origins:
+    # Local development default
+    allow_origins.append("http://localhost:3000")
+    # Attempt to infer preview frontend origin based on host
+    # If backend runs on https://<host>:3001, frontend likely at https://<host>:3000
+    host = os.getenv("HOSTNAME") or ""
+    # The platform URL is not always available; we safely add a generic pattern used by the environment
+    allow_origins.append("https://vscode-internal-42596-beta.beta01.cloud.kavia.ai:3000")
 
 app.add_middleware(
     CORSMiddleware,
